@@ -1,0 +1,128 @@
+#!/usr/bin/env perl
+
+# Outputs the sizes of C types on the local machine
+
+use strict;
+use warnings;
+
+use Config;
+use Getopt::Long;
+use File::Temp;
+use List::Util 'max';
+
+GetOptions(
+    'basic!'    => \(my $basic      = 1),
+    'stddef!'   => \(my $stddef     = 1),
+    'pointer!'  => \(my $pointer    = 1),
+    'width!'    => \(my $width      = 0),
+    'extra=s@'  => \(my $extra),
+
+    'all!'      => \(my $all),
+
+    'cc=s'      => \(my $cc = $Config{ccname}),
+
+    'verbose!'  => \(my $verbose),
+);
+$basic = $stddef = $pointer = $width = 1 if $all;
+
+die "compiler $cc not usuable" if system "$cc -v > /dev/null 2>&1";
+
+sub types {
+    my @types;
+
+    $basic && push @types, qw(
+        void
+        char        unsigned-char       signed-char
+        short       unsigned-short      signed-short
+        int         unsigned-int        signed-int
+        long        unsigned-long       signed-long
+        long long   unsigned-long-long  signed-long-long
+        float       double              long-double
+    );
+
+    if ($pointer) {
+        push @types, qw(
+            void*
+            char*
+            int*
+        );
+        push @types, ['funcptr', 'int(*T)()'];
+    }
+
+    $width && push @types, qw(
+        int8_t          uint8_t
+        int16_t         uint16_t
+        int32_t         uint32_t
+        int64_t         uint64_t
+        int_least8_t    uint8_t
+        int_least16_t   uint16_t
+        int_least32_t   uint32_t
+        int_least64_t   uint64_t
+    );
+
+    # stddef
+    $stddef && push @types, qw(
+        size_t
+        wchar_t
+        ptrdiff_t
+    );
+
+    push @types, @$extra if $extra && @$extra;
+
+    s/-/ /g for @types;
+
+    return @types;
+}
+
+sub sizeof {
+    my $type = shift;
+
+    my $src = File::Temp->new(SUFFIX => '.c');
+    my $src_name = $src->filename;
+
+    my $typedef;
+    if (ref $type) {
+        # special syntax requested for this type
+        $typedef = "typedef $type->[1]";
+        $type = $type->[0];
+    }
+    else {
+        $typedef = "typedef $_ T";
+    }
+
+    $verbose && warn "Testing $type\n";
+
+    my $program = <<END;
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
+int main() {
+$typedef;
+printf("%u\\n", sizeof(T));
+return EXIT_SUCCESS;
+}
+END
+
+    print $src $program;
+
+    my $bin = File::Temp->new;
+    my $bin_name = $bin->filename;
+    if (system $cc => $src_name => '-o', $bin_name) {
+        warn "cc failed: $?";
+        $verbose && warn "Program was:\n$program\n";
+        return $type, 0;
+    }
+    close $bin;
+
+    chomp(my @size = qx($bin_name));
+    return $type, shift @size;
+}
+
+my %sizes = map { sizeof($_) } types();
+
+my @types = keys %sizes;
+my $len = length('sizeof()') + max map {length} @types;
+
+my @sized_types = sort { $sizes{$a} <=> $sizes{$b} || length $a <=> length $b || $a cmp $b } @types;
+printf "%-${len}s = %s\n", "sizeof($_)", $sizes{$_} || '?' for @sized_types;

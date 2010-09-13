@@ -1,0 +1,76 @@
+#!/usr/bin/perl
+
+# Finds perl modules in the @INC path
+
+use strict;
+use warnings;
+
+use File::Basename 'basename';
+use Getopt::Long 'GetOptions';
+
+sub usage {
+    my $me = basename($0);
+    print <<END_HELP;
+Usage: $me [<options>] <module> [<module> ...]
+Options:
+  --compile
+    Attempt to compile each module and report its \$VERSION
+  --all
+    Continue searching past the first occurrence in \@INC
+END_HELP
+    exit 0;
+}
+
+GetOptions(
+    'compile!'  => \(my $compile = 1),
+    'all!'      => \(my $all     = 1),
+    'help!'     => \(my $help),
+) || usage;
+$help && usage;
+
+for my $module (@ARGV) {
+    my $found = 0;
+
+    (my $filename = "$module.pm") =~ s{::}{/}g;
+
+    # do our own path resolution (see require in perlfunc)
+    foreach my $prefix (@INC) {
+        my $realfilename = "$prefix/$filename";
+        if (-r $realfilename) {
+            $found++;
+
+            print "$module: $realfilename";
+
+            if ($compile) {
+                print ' (';
+
+                my $pid = fork;
+                die $! unless defined $pid;
+
+                if (!$pid) {
+                    my $loaded = eval "require '$realfilename'; 1";
+                    if ($loaded) {
+                        no strict 'refs';
+                        my $version = ${ $module . '::VERSION' };
+                        print defined $version ? "v$version" : 'unknown version';
+                    }
+                    else {
+                        print "$module failed to load: $@";
+                    }
+                    exit;
+                }
+                waitpid $pid, 0;
+
+                print ')';
+            }
+
+            print "\n";
+
+            last unless $all;
+        }
+    }
+
+    if (!$found) {
+        print "$module: not found\n";
+    }
+}

@@ -1,0 +1,219 @@
+#!/usr/bin/perl
+
+# Create a new perl script with a variety of boilerplate options
+
+use strict;
+use warnings;
+
+use Fatal qw{open close chmod};
+use File::Basename;
+use Getopt::Long;
+use IPC::Open2;
+use List::Util 'max';
+use POSIX 'ceil';
+
+sub usage {
+    my $me = basename($0);
+    print <<END_HELP;
+Usage: $me [<options>]
+Available modules:
+  --bench    (Benchmark)
+  --dbi      (DBI)
+  --getopt   (Getopt::Long; also generates call to GetOptions)
+  --hires    (Time::HiRes)
+  --lwp      (LWP::Simple and LWP::UserAgent)
+  --storable (Storable qw/nfreeze thaw/)
+  --yaml     (YAML::Syck)
+  --use <module>
+Other options:
+  --whitespace
+    Include whitespace at the bottom of the script
+  --usage
+    Generate a usage() function
+  --loop
+    Generate a while(<>){chomp} loop
+  --force
+    Overwrite target file if it exists
+  --tidy
+    Run perltidy over generated script
+END_HELP
+    exit 0;
+}
+
+GetOptions(
+    'dbi!'          => \(my $use_dbi),
+    'getopt!'       => \(my $use_getopt),
+    'lwp!'          => \(my $use_lwp),
+    'storable!'     => \(my $use_storable),
+    'yaml!'         => \(my $use_yaml),
+    'hires!'        => \(my $use_hires),
+    'bench!'        => \(my $use_bench),
+    'use=s@'        => \(my $modules),
+
+    'whitespace!'   => \(my $whitespace     = 1),
+    'usage!'        => \(my $include_usage  = 0),
+    'n|loop!'       => \(my $loop           = 0),
+    'force!'        => \(my $force          = 0),
+    'tidy!'         => \(my $tidy           = 0),
+
+    'help!'         => \(my $help),
+) || usage;
+
+$help && usage;
+
+my $filename = shift || usage;
+
+$modules ||= [];
+
+my @sections = (
+    "#!/usr/bin/perl\n",
+    "use strict;\nuse warnings;\n",
+);
+
+$use_dbi      && push @$modules, q{DBI};
+$use_getopt   && push @$modules, q{Getopt::Long};
+$use_lwp      && push @$modules, qw{LWP::Simple LWP::UserAgent};
+$use_storable && push @$modules, q{Storable qw( nfreeze thaw )};
+$use_yaml     && push @$modules, q{YAML::Syck};
+$use_hires    && push @$modules, q{Time::HiRes qw( time )};
+$use_bench    && push @$modules, q{Benchmark qw( :all :hireswallclock )};
+
+push @sections, join '', map {"use $_;\n"} sort @$modules;
+
+my @options = (
+    ['g|debug!', 'debug'],
+    ['verbose', 'verbose'],
+    ['help'],
+);
+
+$use_dbi && push @options, (
+    ['db-host=s', 'db_host', q{'localhost'}],
+    ['db-port=i', 'db_port', q{3306}],
+    ['db-name=s', 'db_name', q{'database'}],
+    ['db-user=s', 'db_user', q{'user'}],
+    ['db-pass=s', 'db_pass', q{''}],
+);
+
+if ($use_getopt) {
+    my $options = "GetOptions(\n";
+
+    if ($include_usage) {
+        $options = <<'END_OPTIONS' . "\n$options";
+sub usage {
+    (my $me = $0) =~ s,.*/,,;
+    warn <<END_USAGE;
+Usage: $me: [<options>]
+Options:
+  -g, --debug
+    Enable debugging mode.
+  -v, --verbose
+    Enable verbose mode.
+  --help
+    This help.
+END_USAGE
+    exit 1;
+}
+END_OPTIONS
+    }
+
+    my $l0 = 0;
+    my $l1 = 0;
+
+    for (@options) {
+        $l0 = max($l0, length $_->[0]);
+        $l1 = max($l1, length $_->[1]) if @$_ >= 2
+    }
+
+    $l0 += 3;
+
+    $l0 = 4 * ceil($l0/4);
+    $l1 = 4 * ceil($l1/4);
+
+    for (@options) {
+        if (@$_ > 2) {
+            $options .= sprintf "    %-${l0}s=> \\(my \$%-${l1}s = %s),\n", "'$_->[0]'", $_->[1], $_->[2];
+        }
+        elsif (@$_ > 1) {
+            $options .= sprintf "    %-${l0}s=> \\(my \$%s),\n", "'$_->[0]'", $_->[1];
+        }
+        else {
+            $options .= sprintf "    %-${l0}s=> \\(my \$%s),\n", "'$_->[0]!'", $_->[0];
+        }
+    }
+    if ($include_usage) {
+        $options .= ") || usage;\n";
+    }
+    else {
+        $options .= ");\n";
+    }
+    $options .= "\nusage if \$help;\n";
+    push @sections, $options;
+}
+
+if ($use_dbi) {
+    unless ($use_getopt) {
+        push @sections, "my (\$db_name, \$db_host, \$db_port, \$db_user, \$db_pass);\n";
+    }
+
+    push @sections, <<'END_SCRIPT';
+my $dsn = $db_host =~ m{^/}
+    ? "DBI:mysql:database=$db_name;sock=$db_host"
+    : "DBI:mysql:database=$db_name;host=$db_host;port=$db_port";
+my $dbh = DBI->connect($dsn, $db_user, $db_pass, {RaiseError => 1});
+END_SCRIPT
+}
+
+if ($use_bench) {
+    push @sections, <<END_SCRIPT;
+cmpthese(-10, {
+    sub1 => sub {
+        '...code1...';
+    },
+    sub2 => sub {
+        '...code2...';
+    },
+});
+END_SCRIPT
+}
+
+if ($loop) {
+    push @sections, <<END_SCRIPT;
+while (<>) {
+    chomp;
+}
+END_SCRIPT
+}
+
+push @sections, '' if $whitespace;
+
+my $script_fh;
+if (defined $filename && $filename ne '-') {
+    die "won't overwrite existing file '$filename'" if -w $filename && !$force;
+    open $script_fh, '>', $filename;
+}
+else {
+    $script_fh = \*STDOUT;
+}
+
+if ($tidy) {
+    my ($out_fh, $in_fh);
+    open2 $out_fh, $in_fh, 'perltidy';
+    print $in_fh join "\n", @sections;
+    close $in_fh;
+    my $script = join '', <$out_fh>;
+    print $script_fh $script;
+}
+else {
+    print $script_fh join "\n", @sections;
+}
+
+exit if $filename eq '-';
+
+chmod 0755, $filename;
+
+my $editor = $ENV{EDITOR} || 'vim';
+my @edit = ($editor, $filename);
+if ($editor =~ /vim$/) {
+    push @edit, '-c' => 'normal! G'; # start at end of script
+}
+exec @edit;

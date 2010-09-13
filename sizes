@@ -1,0 +1,192 @@
+#!/usr/bin/perl
+
+# This script is a pretty-printing analog of du(1)
+
+use strict;
+use warnings;
+
+use Cwd 'abs_path';
+use File::Find ();
+use File::Basename 'basename';
+use Getopt::Long 'GetOptions';
+
+sub usage {
+    my $me = basename($0);
+    print <<END_HELP;
+Usage: $me [<options>] [<path>]
+    Traverses a directory tree and outputs the space occupied by each file and
+    directory; the size of a directory is the sum of the files and directories
+    it contains. At each directory level, the output is sorted by size
+    (descending), and is indented by the depth of the file relative to the
+    initial path.
+
+Options:
+    --exclude
+        Ignore files and directories with the specified name; more than one may
+        be specified.
+    --[no-]squash-hardlinks
+        Ignore more than the first encountered link to a single file; the
+        search order is not defined. Default on.
+    -x, --[no-]one-file-system
+        Skip files not on the same device as the initial path. Default on.
+
+    -b, --bytes
+    -k, --kilobytes
+    -m, --megabytes
+    -g, --gigabytes
+        Specifies the units used for displaying file sizes.
+    -h, --human
+        Picks an appropriate unit per file. Default.
+
+    --[no-]commify
+        Adds commas to the output in the thousands' place.
+
+    --vim
+        Adds a vim modeline to the end of the output to add folds at
+        indentation levels.
+END_HELP
+    exit;
+}
+
+GetOptions(
+    # search options
+    'dir=s'                 => \(my $dir),
+    'exclude=s@'            => \(my $exclusions), # .svn, .git, etc
+    'squash-hardlinks!'     => \(my $squash_hardlinks   = 1),
+    'x|one-file-system!'    => \(my $one_file_system    = 1),
+
+    # output options
+    'b|bytes!'              => \(my $bytes),
+    'k|kilobytes!'          => \(my $kilobytes),
+    'm|megabytes!'          => \(my $megabytes),
+    'g|gigabytes!'          => \(my $gigabytes),
+    'h|human!'              => \(my $human),
+    'commify!'              => \(my $commify),
+    'vim!'                  => \(my $vim_mode_line      = 1),
+
+    'verbose!'              => \(my $verbose),
+    'help!'                 => \(my $help),
+) || usage;
+$help && usage;
+
+my %suffix = qw( 3 k 6 m 9 g 12 t 15 p );
+
+my $divisor = 1;
+my $suffix = '';
+if ($bytes)     { $divisor =   1; $suffix = ''; }
+if ($kilobytes) { $divisor = 1e3; $suffix = 'k'; }
+if ($megabytes) { $divisor = 1e6; $suffix = 'm'; }
+if ($gigabytes) { $divisor = 1e9; $suffix = 'g'; }
+
+$human++ unless $bytes || $kilobytes || $megabytes || $gigabytes;
+
+$dir = shift if !$dir && @ARGV;
+$dir ||= '.';
+
+$dir = abs_path($dir);
+
+die "$dir does not exist\n" unless -e $dir;
+
+my %exclusions = map {$_ => 1} @$exclusions;
+
+my $MARKER = '/'; # won't appear in a filename
+
+my %sizes;
+
+my $dev_id;
+$dev_id = (stat $dir)[0] if $one_file_system;
+
+my %inodes_seen;
+
+no warnings 'File::Find';
+File::Find::find({wanted => \&wanted, no_chdir => 1}, $dir);
+$verbose && warn "enumeration complete\n";
+display(\%sizes);
+$vim_mode_line && print "# vim: foldmethod=indent shiftwidth=2\n";
+
+my $d;
+sub wanted {
+    my @stats = stat $_;
+    if ($one_file_system && defined ($d = $stats[0]) && $d != $dev_id) {
+        $File::Find::prune = 1 if -d _;
+        $verbose && warn "skip $File::Find::name\n";
+        return;
+    }
+    return unless -f $_;
+    my $size = (lstat $_)[7];
+
+    $size = 0 if $squash_hardlinks && $inodes_seen{"$stats[0]/$stats[1]"}++;
+
+    my @path = grep {length} split m{/}, $File::Find::name;
+    unshift @path, '/' if $dir eq '/';
+    for (@path) {
+        return if $exclusions{$_};
+    }
+
+    $verbose && warn "$File::Find::name\n";
+
+    my $r = \%sizes;
+    while (my $p = shift @path) {
+        $r = $r->{$p} ||= {};
+        $r->{$MARKER} += $size;
+    }
+}
+
+sub display {
+    my $r = shift;
+    my $d = shift || 0;
+    my @p = @_;
+    for my $k (sort {
+        ref $r->{$a} eq 'HASH'
+            ? (
+                ref $r->{$b} eq 'HASH'
+                    ? $r->{$b}{$MARKER} <=> $r->{$a}{$MARKER}
+                    : -1
+            )
+            : (
+                ref $r->{$b} eq 'HASH'
+                    ? 1
+                    : $r->{$b} <=> $r->{$a}
+            )
+    } keys %$r) {
+        my $v = $r->{$k};
+        if (ref $v eq 'HASH') {
+            printf "%s%s: %s\n", '  'x$d, $k, commify($v->{$MARKER});
+            if (scalar keys %$v == 1) {
+                die unless (keys %$v)[0] eq $MARKER;
+            }
+            else {
+                display($v, $d + 1, @p, $k);
+            }
+        }
+    }
+}
+
+sub commify {
+    my $bytes = shift;
+    my $value = $bytes;
+    my $suff = $suffix;
+    if ($human) {
+        for my $div qw/ 15 12 9 6 3 / {
+            if ($bytes / 10**$div > 9) {
+                $value = sprintf '%.1f', $bytes / 10**$div;
+                $suff = $suffix{$div};
+                last;
+            }
+            elsif ($bytes / 10**$div > 0.9) {
+                $value = sprintf '%.2f', $bytes / 10**$div;
+                $suff = $suffix{$div};
+                last;
+            }
+        }
+    }
+    elsif ($divisor != 1) {
+        $value = sprintf '%d', $bytes/$divisor;
+        $value = sprintf '%.2f', $bytes/$divisor if $value eq '0';
+    }
+    if ($commify) {
+        1 while $value =~ s/^([-+]?\d+)(\d{3})/$1,$2/;
+    }
+    $value .= $suff;
+    return $value;
+}
