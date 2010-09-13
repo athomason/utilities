@@ -30,8 +30,10 @@ my $auth_sock = $ENV{SSH_AUTH_SOCK};
 if ($auth_sock && -w $auth_sock) {
     $verbose && warn "\$SSH_AUTH_SOCK found: $auth_sock\n";
 
+    my @stat = stat $auth_sock;
+
     # check that target user is in the group of the authsock
-    my $gid = (stat $auth_sock)[5];
+    my $gid = $stat[5];
     my @group = getgrgid $gid;
     $verbose && warn "\$SSH_AUTH_SOCK has group $group[0]\n";
 
@@ -40,7 +42,7 @@ if ($auth_sock && -w $auth_sock) {
         $verbose && warn "$user is in group $group[0]\n";
         (my $auth_dir = $auth_sock) =~ s,/[^/]+$,,;
 
-        my $perms = 0770;
+        my $perms = $stat[2] | 0770;
         if (chmod $perms, $auth_sock, $auth_dir) {
             $verbose && warn sprintf "Changed permissions on %s and %s to 0%o\n", $auth_sock, $auth_dir, $perms;
         }
