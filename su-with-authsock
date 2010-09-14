@@ -2,14 +2,14 @@
 
 # Opens a subshell as another user (a la su(1)), after making the SSH_AUTH_SOCK
 # and/or .Xauthority files be usable by the target user. This allows ssh/X
-# connections from the target user to be made using the parent user's
-# resources.
+# connections from the target user to be made using the source user's
+# credentials.
 #
 # Restrictions:
 #
 # * Target user must be a member of the SSH_AUTH_SOCK owner's default group
-# * If using sudo (the default), SSH_AUTH_SOCK must be allowed included in
-#   env_keep in sudoers
+# * If using sudo (the default), SSH_AUTH_SOCK must be included in env_keep in
+#   sudoers
 
 use strict;
 use warnings;
