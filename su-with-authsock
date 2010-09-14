@@ -1,8 +1,9 @@
 #!/usr/bin/perl
 
 # Opens a subshell as another user (a la su(1)), after making the SSH_AUTH_SOCK
-# file be usable by the target user.  This allows ssh connections from the
-# target user to be made using the parent user's authsock.
+# and/or .Xauthority files be usable by the target user. This allows ssh/X
+# connections from the target user to be made using the parent user's
+# resources.
 #
 # Restrictions:
 #
@@ -14,9 +15,31 @@ use strict;
 use warnings;
 
 use Getopt::Long;
-GetOptions('verbose!' => \(my $verbose));
 
-my @su = qw( /usr/bin/sudo -i -u ); # or 'su'
+GetOptions(
+    'xauth!'    => \(my $xauth), # link .Xauthority file
+    'fatal!'    => \(my $fatal), # die instead of warn on errors
+    'verbose!'  => \(my $verbose),
+);
+
+sub error {
+    unshift @_, shift() . "\n";
+    $fatal ? die @_ : warn @_;
+}
+sub verbose {
+    return unless $verbose;
+    unshift @_, shift() . "\n";
+    warn @_;
+}
+
+my $su = sub {
+    exec qw( /usr/bin/sudo -i -u ), shift;
+    # or 'su', 'su -', etc
+};
+my $ln = sub {
+    my $user = shift;
+    system qw( /usr/bin/sudo -u ), $user, qw( ln -nsf ), @_;
+};
 
 unless (@ARGV) {
     (my $me = $0) =~ s,.*/,,;
@@ -24,38 +47,104 @@ unless (@ARGV) {
 }
 
 my $user = shift;
-$verbose && warn "Preparing to switch to user $user\n";
+verbose sprintf "Preparing to switch from %s to %s", (getpwuid $<)[0], $user;
 
-my $auth_sock = $ENV{SSH_AUTH_SOCK};
-if ($auth_sock && -w $auth_sock) {
-    $verbose && warn "\$SSH_AUTH_SOCK found: $auth_sock\n";
+share_auth_sock();
+link_xauthority() if $xauth;
+$su->($user);
+
+sub share_auth_sock {
+    verbose "Attempting to share authsock";
+
+    my $auth_sock = $ENV{SSH_AUTH_SOCK};
+    unless ($auth_sock && -w $auth_sock) {
+        error "No writable \$SSH_AUTH_SOCK in environment";
+        return;
+    }
+
+    verbose "\$SSH_AUTH_SOCK found: $auth_sock";
 
     my @stat = stat $auth_sock;
 
     # check that target user is in the group of the authsock
-    my $gid = $stat[5];
+    unless (is_group_readable_by($auth_sock, $user)) {
+        error "$user is not a member of ${auth_sock}'s group; it will not be accessible";
+        return;
+    }
+    verbose "$user has group read permission on $auth_sock";
+
+    (my $auth_dir = $auth_sock) =~ s,/[^/]+$,,;
+
+    unless (ensure_perms(070, $auth_sock, $auth_dir)) {
+        error "Failed to add group RWX permissions on $auth_dir/$auth_sock: $!";
+        return;
+    }
+    verbose sprintf "Added group permissions on $auth_dir & $auth_sock";
+}
+
+sub link_xauthority {
+    verbose "Attempting to link .Xauthority";
+
+    # make source readable by group
+    my @source_ent = getpwuid $<;
+    my $source_home = $source_ent[7];
+    my $source = "$source_home/.Xauthority";
+
+    unless (-r $source) {
+        error "$source is not readable";
+        return;
+    }
+
+    unless (is_group_readable_by($source, $user)) {
+        error "$user is not a member of ${source}'s group; it will not be accessible";
+        return;
+    }
+    verbose "$user has group read permission on $source";
+
+    unless (ensure_perms(060, $source)) {
+        error "Failed to add group RW permissions on $source: $!";
+        return;
+    }
+
+    my @target_ent = getpwnam $user;
+    my $target_home = $target_ent[7];
+    my $target = "$target_home/.Xauthority";
+
+    if ($ln->($user, $source, $target)) {
+        error "Failed to link $source to $target as $user";
+        return;
+    }
+
+    unless (-l $target) {
+        error "$target is not a symlink";
+        return;
+    }
+
+    unless (readlink $target eq $source) {
+        error "$target does not point to $source";
+        return;
+    }
+
+    verbose "Linked $target -> $source";
+}
+
+sub is_group_readable_by {
+    my ($file, $user) = @_;
+    my $gid = (stat $file)[5];
     my @group = getgrgid $gid;
-    $verbose && warn "\$SSH_AUTH_SOCK has group $group[0]\n";
-
-    my @members = split / /, $group[3];
-    if (grep {$_ eq $user} @members) {
-        $verbose && warn "$user is in group $group[0]\n";
-        (my $auth_dir = $auth_sock) =~ s,/[^/]+$,,;
-
-        my $perms = $stat[2] | 0770;
-        if (chmod $perms, $auth_sock, $auth_dir) {
-            $verbose && warn sprintf "Changed permissions on %s and %s to 0%o\n", $auth_sock, $auth_dir, $perms;
-        }
-        else {
-            warn "Failed to change permissions: $!\n";
-        }
-    }
-    else {
-        warn "$user is not a member of $group[0]; $auth_sock will not be accessible\n";
-    }
-}
-else {
-    warn "No writable \$SSH_AUTH_SOCK in environment\n";
+    verbose "$file has group $group[0] ($gid)";
+    my @members = split / /, (getgrgid $gid)[3];
+    verbose "Group $group[0] contains [@members]";
+    return grep({$_ eq $user} @members) ? 1 : 0;
 }
 
-exec @su, $user;
+sub ensure_perms {
+    my ($perms, @files) = @_;
+    for my $file (@files) {
+        my $old_perms = (stat $file)[2];
+        verbose sprintf "$file has permissions 0%o", $old_perms;
+        next if $old_perms & $perms;
+        return 0 unless chmod $old_perms | $perms, $file;
+    }
+    return 1;
+}
