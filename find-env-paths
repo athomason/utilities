@@ -1,0 +1,128 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+sub usage {
+    (my $me = $0) =~ s,.*/,,;
+    print <<END_USAGE;
+Usage: $me [<options>] <root>
+
+  Searches top-level subdirectories of a root path where individual packages
+  are installed (typically with a --prefix option to configure), and outputs
+  shell commands which add paths found therein to appropriate environment
+  variables like PATH.
+
+  For instance, consider a directory structure like:
+
+    /usr/local/mystuff/gcc-4.0/man
+    /usr/local/mystuff/vim-7/man
+
+  Running "$me --man /usr/local/mystuff" will output
+
+    export MANPATH=/usr/local/mystuff/gcc-4.0/man:/usr/local/mystuff/vim-7/man
+
+  if \$MANPATH was empty. If it was not, the new items will be appended to the
+  existing value.
+
+  Duplicate or empty entries will be suppressed from the output variables.
+
+  If none of --bin, --lib, or --man is specified, all will be assumed;
+  otherwise, only those requested will be used.
+
+Options:
+
+  --format=<type>
+    Specify the output format for shell commands. Supported format are 'sh'
+    (default), 'csh', and 'raw'.
+
+  --bin
+    Search for bin/ and sbin/ directories to add to \$PATH.
+  --lib
+    Search for lib/ directories to add to \$LD_LIBRARY_PATH.
+  --man
+    Search for man/ directories to add to \$MANPATH. Note that \$MANPATH may
+    override instead of augment the default search path for man(1).
+
+  --[no-]links
+    Search top-level entries which are symlinks to directories. Defaults on.
+
+  --prepend
+    Add found directories before existing entries instead of after.
+
+END_USAGE
+    exit 1;
+}
+
+use Getopt::Long;
+GetOptions(
+    'root=s'    => \(my $root),
+
+    'bin!'      => \(my $bin        = 0),
+    'lib!'      => \(my $lib        = 0),
+    'man!'      => \(my $man        = 0),
+
+    'links!'    => \(my $symlinks   = 1),
+
+    'format=s'  => \(my $format     = 'sh'),
+    'prepend!'  => \(my $prepend    = 0),
+
+    'help!'     => \(my $help),
+) or usage;
+$help && usage;
+
+$root ||= shift;
+
+die "need root" unless $root;
+
+# default to all options
+$bin = $lib = $man = 1 unless $bin || $lib || $man;
+
+search(qw( PATH            bin sbin )) if $bin;
+search(qw( LD_LIBRARY_PATH lib      )) if $lib;
+search(qw( MANPATH         man      )) if $man;
+
+sub search {
+    my $env_var = shift;
+    my @dirs = shift;
+
+    my @paths;
+    for my $pkg (glob "$root/*") {
+        next unless -d $pkg;
+        next if !$symlinks && -l $pkg;
+        for my $dir (@dirs) {
+            push @paths, "$pkg/$dir" if -e "$pkg/$dir";
+        }
+    }
+
+    if (my $old = $ENV{$env_var}) {
+        my @old_paths = split /:/, $ENV{$env_var} || '';
+        if ($prepend) {
+            unshift @paths, @old_paths;
+        }
+        else {
+            push @paths, @old_paths;
+        }
+    }
+
+    my %seen;
+    @paths = grep { !$seen{$_}++ && -d $_ && -r && -x } @paths;
+
+    export($env_var, @paths);
+}
+
+sub export {
+    my ($var, @paths) = @_;
+    if ($format eq 'sh') {
+        printf "export %s=%s;\n", $var, join ':', @paths;
+    }
+    elsif ($format eq 'csh') {
+        printf "setenv %s %s;\n", $var, join ':', @paths;
+    }
+    elsif ($format eq 'raw') {
+        printf "%s\n", join ' ', @paths;
+    }
+    else {
+        die "unknown format $format\n";
+    }
+}
