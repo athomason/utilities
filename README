@@ -1,0 +1,23 @@
+find-env-paths
+  Searches top-level subdirectories of a root path where individual packages
+  are installed (typically with a --prefix option to configure), and outputs
+  shell commands which add paths found therein to appropriate environment
+  variables like PATH.
+
+new-perl-script
+  Create a new perl script with a variety of boilerplate options
+
+perlwhich
+  Finds perl modules in the @INC path
+
+sizes
+  Pretty-printing analog of du(1)
+
+su-with-authsock
+  Opens a subshell as another user (a la su(1)), after making the SSH_AUTH_SOCK
+  and/or .Xauthority files be usable by the target user. This allows ssh/X
+  connections from the target user to be made using the source user's
+  credentials.
+
+type-sizes
+   Outputs the sizes of C types on the local machine
