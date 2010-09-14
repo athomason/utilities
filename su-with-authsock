@@ -142,8 +142,8 @@ sub ensure_perms {
     my ($perms, @files) = @_;
     for my $file (@files) {
         my $old_perms = (stat $file)[2];
-        verbose sprintf "$file has permissions 0%o", $old_perms;
-        next if $old_perms & $perms;
+        verbose sprintf "$file has permissions 0%o (need 0%o)", $old_perms, $perms;
+        next if ($old_perms & $perms) == $perms;
         return 0 unless chmod $old_perms | $perms, $file;
     }
     return 1;
