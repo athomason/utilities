@@ -15,9 +15,10 @@ use strict;
 use warnings;
 
 use Getopt::Long;
+use Sys::Hostname 'hostname';
 
 GetOptions(
-    'xauth!'    => \(my $xauth), # link .Xauthority file
+    'xauth!'    => \(my $xauth = 1), # share Xauthority
     'fatal!'    => \(my $fatal), # die instead of warn on errors
     'verbose!'  => \(my $verbose),
 );
@@ -32,13 +33,10 @@ sub verbose {
     warn @_;
 }
 
+my $sudo = '/usr/bin/sudo';
 my $su = sub {
-    exec qw( /usr/bin/sudo -i -u ), shift;
+    exec $sudo, qw( -i -u ), shift;
     # or 'su', 'su -', etc
-};
-my $ln = sub {
-    my $user = shift;
-    system qw( /usr/bin/sudo -u ), $user, qw( ln -nsf ), @_;
 };
 
 unless (@ARGV) {
@@ -50,7 +48,7 @@ my $user = shift;
 verbose sprintf "Preparing to switch from %s to %s", (getpwuid $<)[0], $user;
 
 share_auth_sock();
-link_xauthority() if $xauth;
+share_xauthority() if $xauth;
 $su->($user);
 
 sub share_auth_sock {
@@ -67,83 +65,44 @@ sub share_auth_sock {
     my @stat = stat $auth_sock;
 
     # check that target user is in the group of the authsock
-    return unless user_in_group_of_file($user, $auth_sock);
-    verbose "$user is in ${auth_sock}'s group";
-
-    (my $auth_dir = $auth_sock) =~ s,/[^/]+$,,;
-
-    unless (ensure_perms(070, $auth_sock, $auth_dir)) {
-        error "Failed to add group RWX permissions on $auth_dir/$auth_sock: $!";
-        return;
-    }
-    verbose sprintf "Added group permissions on $auth_dir & $auth_sock";
-}
-
-sub link_xauthority {
-    verbose "Attempting to link .Xauthority";
-
-    # make source readable by group
-    my @source_ent = getpwuid $<;
-    my $source_home = $source_ent[7];
-    my $source = "$source_home/.Xauthority";
-
-    unless (-r $source) {
-        error "$source is not readable";
-        return;
-    }
-
-    return unless user_in_group_of_file($user, $source);
-    verbose "$user is in ${source}'s group";
-
-    unless (ensure_perms(060, $source)) {
-        error "Failed to add group RW permissions on $source: $!";
-        return;
-    }
-
-    my @target_ent = getpwnam $user;
-    my $target_home = $target_ent[7];
-    my $target = "$target_home/.Xauthority";
-
-    if ($ln->($user, $source, $target)) {
-        error "Failed to link $source to $target as $user";
-        return;
-    }
-
-    unless (-l $target) {
-        error "$target is not a symlink";
-        return;
-    }
-
-    unless (readlink $target eq $source) {
-        error "$target does not point to $source";
-        return;
-    }
-
-    verbose "Linked $target -> $source";
-}
-
-sub user_in_group_of_file {
-    my ($user, $file) = @_;
-    my $gid = (stat $file)[5];
+    my $gid = $stat[5];
     my @group = getgrgid $gid;
-    verbose "$file has group $group[0] ($gid)";
+    verbose "$auth_sock has group $group[0] ($gid)";
     my @members = split / /, (getgrgid $gid)[3];
     verbose "Group $group[0] contains [@members]";
 
     unless (grep({$_ eq $user} @members)) {
-        error "$user is not a member of ${file}'s group ($group[0]); it will not be accessible";
-        return 0;
+        error "$user is not a member of ${auth_sock}'s group ($group[0]); it will not be accessible";
+        return;
     }
-    return 1;
+    verbose "$user is in ${auth_sock}'s group";
+
+    (my $auth_dir = $auth_sock) =~ s,/[^/]+$,,;
+
+    my $group_perms = 070;
+    for my $file ($auth_sock, $auth_dir) {
+        my $old_perms = (stat $file)[2];
+        verbose sprintf "$file has permissions 0%o (need 0%o)", $old_perms, $group_perms;
+        next if ($old_perms & $group_perms) == $group_perms;
+        unless (chmod $old_perms | $group_perms, $file) {
+            error "Failed to add group RWX permissions on $auth_dir/$auth_sock: $!";
+            return;
+        }
+    }
+
+    verbose sprintf "Added group permissions on $auth_dir & $auth_sock";
 }
 
-sub ensure_perms {
-    my ($perms, @files) = @_;
-    for my $file (@files) {
-        my $old_perms = (stat $file)[2];
-        verbose sprintf "$file has permissions 0%o (need 0%o)", $old_perms, $perms;
-        next if ($old_perms & $perms) == $perms;
-        return 0 unless chmod $old_perms | $perms, $file;
+sub share_xauthority {
+    verbose "Attempting to share Xauthority";
+
+    my $display = $ENV{DISPLAY};
+    $display =~ s{localhost:}{hostname() . '/unix:'}e; # convert to xauth-compatible string
+
+    if (system "xauth extract - $display | $sudo -u $user -H xauth merge -") {
+        error "xauth failed";
+        return;
     }
-    return 1;
+
+    verbose "Shared Xauthority";
 }
