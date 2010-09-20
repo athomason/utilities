@@ -98,10 +98,10 @@ sub search {
     if (my $old = $ENV{$env_var}) {
         my @old_paths = split /:/, $ENV{$env_var} || '';
         if ($prepend) {
-            unshift @paths, @old_paths;
+            push @paths, @old_paths;
         }
         else {
-            push @paths, @old_paths;
+            unshift @paths, @old_paths;
         }
     }
 
