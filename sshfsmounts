@@ -1,0 +1,61 @@
+#!/usr/bin/perl
+
+# Attempt to load sshfs mounts listed in a config file. Unless --no-need-key
+# is given, script will silently bail if public-key auth is not available
+#
+# Config format:
+#   remotehost:/remote/path /local/path
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+
+GetOptions(
+    'mounts=s'  => \(my $mounts),                   # list of desired mounts
+    'need-key!' => \(my $need_key = 1),             # bail unless 'ssh-add -l' reports available keys
+    'sshfs=s'   => \(my $sshfs = '/usr/bin/sshfs'), # path to sshfs
+    'mtab=s'    => \(my $mtab = '/proc/mounts'),    # path to list of current mounts
+    'verbose!'  => \(my $verbose = 0),              # more output
+);
+
+sub verbose { return unless $verbose; $_[0] .= "\n"; warn @_ }
+
+exit if $need_key && system "ssh-add -l >/dev/null 2>&1";
+
+$mounts ||= shift;
+unless ($mounts) {
+    my $home = (getpwuid $<)[7];
+    $mounts = "$home/.ssh/sshfs-mounts";
+}
+
+# get list of desired mounts
+verbose "loading mounts from $mounts";
+my %mounts;
+open my $mounts_fh, '<', $mounts or die "could not open $mounts: $!\n";
+while (<$mounts_fh>) {
+    chomp;
+    s/^\s+//;
+    next if /^#/;
+    next if /^$/;
+    my ($mount, $dir) = split;
+    $mounts{$mount} = $dir;
+}
+
+# ignore any that are already mounted
+open my $mtab_fh, '<', $mtab or die "could not open $mtab: $!\n";
+while (<$mtab_fh>) {
+    chomp;
+    next unless /sshfs#(\S+)/;
+    my $live = $1;
+    if (exists $mounts{$live}) {
+        verbose "alive: $live\n";
+        delete $mounts{$live};
+    }
+}
+
+# mount the remaining unmounted ones
+for my $mount (sort keys %mounts) {
+    verbose "dead:  %s --> %s\n", $mount, $mounts{$mount};
+    system $sshfs, $mount, $mounts{$mount};
+}

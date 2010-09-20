@@ -13,6 +13,9 @@ perlwhich
 sizes
   Pretty-printing analog of du(1)
 
+sshfsmounts
+  Attempt to load sshfs mounts listed in a config file.
+
 su-with-authsock
   Opens a subshell as another user (a la su(1)), after making the SSH_AUTH_SOCK
   and/or .Xauthority files be usable by the target user. This allows ssh/X
