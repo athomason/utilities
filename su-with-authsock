@@ -97,6 +97,11 @@ sub share_xauthority {
     verbose "Attempting to share Xauthority";
 
     my $display = $ENV{DISPLAY};
+    unless (defined $display) {
+        error "\$DISPLAY not available";
+        return;
+    }
+
     $display =~ s{localhost:}{hostname() . '/unix:'}e; # convert to xauth-compatible string
 
     if (system "xauth extract - $display | $sudo -u $user -H xauth merge -") {
