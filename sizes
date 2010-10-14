@@ -21,7 +21,7 @@ Usage: $me [<options>] [<path>]
     initial path.
 
 Options:
-    --exclude
+    --exclude=<name>
         Ignore files and directories with the specified name; more than one may
         be specified.
     --[no-]squash-hardlinks
@@ -38,8 +38,14 @@ Options:
     -h, --human
         Picks an appropriate unit per file. Default.
 
+    --max-depth=<n>
+        Maximum path depth to display.
+
     --[no-]commify
-        Adds commas to the output in the thousands' place.
+        Adds commas to the output in the thousands' places.
+
+    --absolute
+        Display tree using absolute paths from the root directory.
 
     --vim
         Adds a vim modeline to the end of the output to add folds at
@@ -61,8 +67,10 @@ GetOptions(
     'm|megabytes!'          => \(my $megabytes),
     'g|gigabytes!'          => \(my $gigabytes),
     'h|human!'              => \(my $human),
+    'max-depth=i'           => \(my $max_depth),
     'commify!'              => \(my $commify),
     'vim!'                  => \(my $vim_mode_line      = 1),
+    'absolute!'             => \(my $absolute_paths     = 0),
 
     'verbose!'              => \(my $verbose),
     'help!'                 => \(my $help),
@@ -83,7 +91,7 @@ $human++ unless $bytes || $kilobytes || $megabytes || $gigabytes;
 $dir = shift if !$dir && @ARGV;
 $dir ||= '.';
 
-$dir = abs_path($dir);
+$dir = abs_path($dir) if $absolute_paths;
 
 die "$dir does not exist\n" unless -e $dir;
 
@@ -104,10 +112,10 @@ $verbose && warn "enumeration complete\n";
 display(\%sizes);
 $vim_mode_line && print "# vim: foldmethod=indent shiftwidth=2\n";
 
-my $d;
+my $dev;
 sub wanted {
     my @stats = stat $_;
-    if ($one_file_system && defined ($d = $stats[0]) && $d != $dev_id) {
+    if ($one_file_system && defined ($dev = $stats[0]) && $dev != $dev_id) {
         $File::Find::prune = 1 if -d _;
         $verbose && warn "skip $File::Find::name\n";
         return;
@@ -122,6 +130,8 @@ sub wanted {
     for (@path) {
         return if $exclusions{$_};
     }
+
+    splice @path, $max_depth if defined $max_depth && scalar @path > $max_depth;
 
     $verbose && warn "$File::Find::name\n";
 
