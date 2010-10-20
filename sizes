@@ -8,6 +8,7 @@ use warnings;
 use Cwd 'abs_path';
 use File::Find ();
 use File::Basename 'basename';
+use File::Temp ();
 use Getopt::Long 'GetOptions';
 
 sub usage {
@@ -50,6 +51,10 @@ Options:
     --vim
         Adds a vim modeline to the end of the output to add folds at
         indentation levels.
+
+    --edit
+        Writes output to a temporary file and opens it using \$EDITOR.
+
 END_HELP
     exit;
 }
@@ -71,6 +76,7 @@ GetOptions(
     'commify!'              => \(my $commify),
     'vim!'                  => \(my $vim_mode_line      = 1),
     'absolute!'             => \(my $absolute_paths     = 0),
+    'edit!'                 => \(my $edit),
 
     'verbose!'              => \(my $verbose),
     'help!'                 => \(my $help),
@@ -106,11 +112,18 @@ $dev_id = (stat $dir)[0] if $one_file_system;
 
 my %inodes_seen;
 
+my $out = $edit ? File::Temp->new : \*STDOUT;
+
 no warnings 'File::Find';
 File::Find::find({wanted => \&wanted, no_chdir => 1}, $dir);
 $verbose && warn "enumeration complete\n";
 display(\%sizes);
-$vim_mode_line && print "# vim: foldmethod=indent shiftwidth=2\n";
+$vim_mode_line && print $out "# vim: foldmethod=indent shiftwidth=2\n";
+
+if ($edit) {
+    die "no \$EDITOR set\n" unless $ENV{EDITOR};
+    system $ENV{EDITOR}, $out->filename;
+}
 
 my $dev;
 sub wanted {
@@ -161,7 +174,7 @@ sub display {
     } keys %$r) {
         my $v = $r->{$k};
         if (ref $v eq 'HASH') {
-            printf "%s%s: %s\n", '  'x$d, $k, commify($v->{$MARKER});
+            printf $out "%s%s: %s\n", '  'x$d, $k, commify($v->{$MARKER});
             if (scalar keys %$v == 1) {
                 die unless (keys %$v)[0] eq $MARKER;
             }
