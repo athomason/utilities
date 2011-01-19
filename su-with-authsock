@@ -18,9 +18,13 @@ use Getopt::Long;
 use Sys::Hostname 'hostname';
 
 GetOptions(
-    'xauth!'    => \(my $xauth = 1), # share Xauthority
-    'fatal!'    => \(my $fatal), # die instead of warn on errors
-    'verbose!'  => \(my $verbose),
+    'xauth!'        => \(my $xauth = 1), # share Xauthority
+    'fatal!'        => \(my $fatal), # die instead of warn on errors
+    'usermod!'      => \(my $usermod), # run usermod to add target user to source group
+    'old-sudo!'     => \(my $old_sudo), # for versions without -i
+    'sudo-cmd=s'    => \(my $sudo_cmd = '/usr/bin/sudo'),
+    'usermod-cmd=s' => \(my $usermod_cmd = '/usr/sbin/usermod'),
+    'verbose!'      => \(my $verbose),
 );
 
 sub error {
@@ -33,9 +37,11 @@ sub verbose {
     warn @_;
 }
 
-my $sudo = '/usr/bin/sudo';
 my $su = sub {
-    exec $sudo, qw( -i -u ), shift;
+    if ($old_sudo) {
+        exec $sudo_cmd, qw( su -m - ), shift;
+    }
+    exec $sudo_cmd, qw( -i -u ), shift;
     # or 'su', 'su -', etc
 };
 
@@ -72,8 +78,14 @@ sub share_auth_sock {
     verbose "Group $group[0] contains [@members]";
 
     unless (grep({$_ eq $user} @members)) {
-        error "$user is not a member of ${auth_sock}'s group ($group[0]); it will not be accessible";
-        return;
+        if ($usermod) {
+            verbose "Adding $user to group $group[0]";
+            system $sudo_cmd, $usermod_cmd, '-G', $group[0], $user;
+        }
+        else {
+            error "$user is not a member of ${auth_sock}'s group ($group[0]); it will not be accessible";
+            return;
+        }
     }
     verbose "$user is in ${auth_sock}'s group";
 
@@ -104,7 +116,7 @@ sub share_xauthority {
 
     $display =~ s{localhost:}{hostname() . '/unix:'}e; # convert to xauth-compatible string
 
-    if (system "xauth extract - $display | $sudo -u $user -H xauth merge -") {
+    if (system "xauth extract - $display | $sudo_cmd -u $user -H xauth merge -") {
         error "xauth failed";
         return;
     }
