@@ -28,6 +28,7 @@ GetOptions(
 ) || usage;
 $help && usage;
 
+my %visited;
 for my $module (@ARGV) {
     my $found = 0;
 
@@ -35,6 +36,8 @@ for my $module (@ARGV) {
 
     # do our own path resolution (see require in perlfunc)
     foreach my $prefix (@INC) {
+        next if $visited{$prefix}++;
+
         my $realfilename = "$prefix/$filename";
         if (-r $realfilename) {
             $found++;
